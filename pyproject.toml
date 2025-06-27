@@ -22,6 +22,7 @@ dependencies = [
   "invisible-watermark",
   "ruff == 0.6.8",
   "accelerate",
+  "diffusers @ git+https://github.com/huggingface/diffusers.git",
 ]
 
 [project.optional-dependencies]
