@@ -1,4 +1,4 @@
-# torch installation (including CUDA version) is handled in cog.yaml
+torch==2.2.2+cu121 # Explicitly add torch with CUDA for Replicate build
 diffusers==0.27.2
 transformers==4.39.3
 accelerate==0.29.3
