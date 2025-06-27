@@ -1,0 +1,55 @@
+build:
+  python_version: "3.10"
+  # Install PyTorch with CUDA 12.1 support
+  # For other CUDA versions, you might need to change the index URL or package name.
+  # Example: torch==2.2.2+cu118 for CUDA 11.8
+  # Make sure the base Cog image has the required CUDA toolkit.
+  # Replicate's default GPU images usually have recent CUDA toolkits.
+  python_packages:
+    - "torch==2.2.2+cu121" # Specify CUDA version for torch
+  run:
+    - "pip install --no-cache-dir -r requirements.txt"
+    # Add any other build-time commands here, like downloading model weights
+    # if they are not handled by from_pretrained directly or need special handling.
+
+# predict.py defines a Predictor class that Cog uses for inference.
+predict: "predict.py:Predictor"
+
+# Define the inputs for the predict() method in predict.py:Predictor
+# These should match the arguments and type hints in the predict method.
+# The `default=None` for input_image means it's optional.
+# `ge` and `le` provide validation for numerical inputs.
+input:
+  - name: "input_image"
+    type: "Path"
+    description: "Input image for editing. Leave blank for text-to-image."
+    optional: true
+  - name: "prompt"
+    type: "str"
+    description: "Text prompt for the image generation or editing."
+  - name: "seed"
+    type: "int"
+    description: "Random seed. Leave blank to randomize."
+    optional: true
+  - name: "guidance_scale"
+    type: "float"
+    description: "Scale for classifier-free guidance."
+    default: 2.5
+    ge: 1.0
+    le: 10.0
+  - name: "num_inference_steps"
+    type: "int"
+    description: "Number of inference steps."
+    default: 28
+    ge: 1
+    le: 30
+# If you added width/height for T2I as inputs to Predictor.predict, define them here too.
+# Example:
+#  - name: "width"
+#    type: "int"
+#    description: "Width of the image for text-to-image generation (if no input_image)."
+#    default: 1024
+#  - name: "height"
+#    type: "int"
+#    description: "Height of the image for text-to-image generation (if no input_image)."
+#    default: 1024
