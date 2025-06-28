@@ -1,124 +1,80 @@
 import gradio as gr
 import numpy as np
-# import spaces # No longer used after removing @spaces.GPU decorator
+import spaces
 import torch
 import random
 from PIL import Image
+
 from diffusers import FluxKontextPipeline
-# from diffusers.utils import load_image # Not directly used by Predictor, PIL.Image.open is used.
-from cog import BasePredictor, Input, Path
-import tempfile # For saving output image
+from diffusers.utils import load_image
 
 MAX_SEED = np.iinfo(np.int32).max
-# DEVICE will be set in Predictor's setup
 
-# --- Cog Predictor Class ---
-class Predictor(BasePredictor):
-    def setup(self):
-        """Load the model into memory to make running multiple predictions efficient"""
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.pipe = FluxKontextPipeline.from_pretrained(
-            "black-forest-labs/FLUX.1-Kontext-dev",
-            torch_dtype=torch.bfloat16
-        ).to(self.device)
+pipe = FluxKontextPipeline.from_pretrained("black-forest-labs/FLUX.1-Kontext-dev", torch_dtype=torch.bfloat16).to("cuda")
 
-    def predict(
-        self,
-        input_image: Path = Input(description="Input image for editing. Leave blank for text-to-image.", default=None),
-        prompt: str = Input(description="Text prompt for the image generation or editing."),
-        seed: int = Input(description="Random seed. Leave blank to randomize.", default=None),
-        guidance_scale: float = Input(description="Scale for classifier-free guidance.", ge=1.0, le=10.0, default=2.5),
-        num_inference_steps: int = Input(description="Number of inference steps.", ge=1, le=30, default=28),
-        # randomize_seed is implicitly handled by seed=None
-        # width and height for text-to-image could be added if desired, defaulting to e.g. 1024
-        # For image editing, width/height are derived from the input image.
-    ) -> Path:
-        """Run a single prediction on the model"""
-        if seed is None:
-            seed = random.randint(0, MAX_SEED)
+@spaces.GPU
+def infer(input_image, prompt, seed=42, randomize_seed=False, guidance_scale=2.5, steps=28, progress=gr.Progress(track_tqdm=True)):
+    """
+    Perform image editing using the FLUX.1 Kontext pipeline.
 
-        generator = torch.Generator(device=self.device).manual_seed(seed)
+    This function takes an input image and a text prompt to generate a modified version
+    of the image based on the provided instructions. It uses the FLUX.1 Kontext model
+    for contextual image editing tasks.
 
-        pil_image = None
-        if input_image:
-            pil_image = Image.open(str(input_image)).convert("RGB")
+    Args:
+        input_image (PIL.Image.Image): The input image to be edited. Will be converted
+            to RGB format if not already in that format.
+        prompt (str): Text description of the desired edit to apply to the image.
+            Examples: "Remove glasses", "Add a hat", "Change background to beach".
+        seed (int, optional): Random seed for reproducible generation. Defaults to 42.
+            Must be between 0 and MAX_SEED (2^31 - 1).
+        randomize_seed (bool, optional): If True, generates a random seed instead of
+            using the provided seed value. Defaults to False.
+        guidance_scale (float, optional): Controls how closely the model follows the
+            prompt. Higher values mean stronger adherence to the prompt but may reduce
+            image quality. Range: 1.0-10.0. Defaults to 2.5.
+        steps (int, optional): Controls how many steps to run the diffusion model for.
+            Range: 1-30. Defaults to 28.
+        progress (gr.Progress, optional): Gradio progress tracker for monitoring
+            generation progress. Defaults to gr.Progress(track_tqdm=True).
 
-        if pil_image:
-            generated_image = self.pipe(
-                image=pil_image,
-                prompt=prompt,
-                guidance_scale=guidance_scale,
-                width=pil_image.size[0],
-                height=pil_image.size[1],
-                num_inference_steps=num_inference_steps,
-                generator=generator,
-            ).images[0]
-        else:
-            # Text-to-image: requires default width/height or additional inputs in cog.yaml
-            # For now, let's use a common default size like 1024x1024 if no input image
-            # This part of the HF app was less defined, as it focused on image editing.
-            generated_image = self.pipe(
-                prompt=prompt,
-                guidance_scale=guidance_scale,
-                num_inference_steps=num_inference_steps,
-                generator=generator,
-                width=1024, # Default for T2I
-                height=1024, # Default for T2I
-            ).images[0]
+    Returns:
+        tuple: A 3-tuple containing:
+            - PIL.Image.Image: The generated/edited image
+            - int: The seed value used for generation (useful when randomize_seed=True)
+            - gr.update: Gradio update object to make the reuse button visible
 
-        output_path = Path(tempfile.mkdtemp()) / "output.png"
-        generated_image.save(str(output_path))
-        return output_path
+    Example:
+        >>> edited_image, used_seed, button_update = infer(
+        ...     input_image=my_image,
+        ...     prompt="Add sunglasses",
+        ...     seed=123,
+        ...     randomize_seed=False,
+        ...     guidance_scale=2.5
+        ... )
+    """
+    if randomize_seed:
+        seed = random.randint(0, MAX_SEED)
 
-# --- Gradio UI (for local testing) ---
-# Note: The @spaces.GPU decorator is Hugging Face specific and not used by Cog.
-# We define a separate infer function for Gradio that can use the loaded pipeline.
-
-# Global pipe for Gradio, loaded if not in Cog environment (e.g. __main__)
-gradio_pipe = None
-GRADIO_DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-
-def ensure_gradio_pipe_loaded():
-    global gradio_pipe
-    if gradio_pipe is None:
-        print("Loading model for Gradio UI...")
-        gradio_pipe = FluxKontextPipeline.from_pretrained(
-            "black-forest-labs/FLUX.1-Kontext-dev",
-            torch_dtype=torch.bfloat16
-        ).to(GRADIO_DEVICE)
-        print("Model loaded for Gradio.")
-
-# @spaces.GPU # This decorator is for HF Spaces, remove or comment out for local/Cog
-def gradio_infer(input_image_pil, prompt_text, seed_val, randomize_seed_bool, guidance_val, steps_val, progress=gr.Progress(track_tqdm=True)):
-    ensure_gradio_pipe_loaded()
-
-    if randomize_seed_bool or seed_val < 0: # HF app used 0 as default, here we match randomize_seed checkbox
-        seed_val = random.randint(0, MAX_SEED)
-
-    generator = torch.Generator(device=GRADIO_DEVICE).manual_seed(int(seed_val))
-
-    if input_image_pil:
-        input_image_pil = input_image_pil.convert("RGB")
-        image = gradio_pipe(
-            image=input_image_pil,
-            prompt=prompt_text,
-            guidance_scale=guidance_val,
-            width=input_image_pil.size[0],
-            height=input_image_pil.size[1],
-            num_inference_steps=int(steps_val),
-            generator=generator,
+    if input_image:
+        input_image = input_image.convert("RGB")
+        image = pipe(
+            image=input_image,
+            prompt=prompt,
+            guidance_scale=guidance_scale,
+            width = input_image.size[0],
+            height = input_image.size[1],
+            num_inference_steps=steps,
+            generator=torch.Generator().manual_seed(seed),
         ).images[0]
     else:
-        image = gradio_pipe(
-            prompt=prompt_text,
-            guidance_scale=guidance_val,
-            num_inference_steps=int(steps_val),
-            generator=generator,
-            width=1024, # Default for T2I in Gradio if no image
-            height=1024, # Default for T2I in Gradio if no image
+        image = pipe(
+            prompt=prompt,
+            guidance_scale=guidance_scale,
+            num_inference_steps=steps,
+            generator=torch.Generator().manual_seed(seed),
         ).images[0]
-
-    return image, seed_val, gr.update(visible=True)
+    return image, seed, gr.update(visible=True)
 
 css="""
 #col-container {
@@ -128,11 +84,10 @@ css="""
 """
 
 with gr.Blocks(css=css) as demo:
+
     with gr.Column(elem_id="col-container"):
         gr.Markdown(f"""# FLUX.1 Kontext [dev]
-        Image editing and manipulation model guidance-distilled from FLUX.1 Kontext [pro],
-        [[blog]](https://bfl.ai/announcements/flux-1-kontext-dev)
-        [[model]](https://huggingface.co/black-forest-labs/FLUX.1-Kontext-dev)
+Image editing and manipulation model guidance-distilled from FLUX.1 Kontext [pro], [[blog]](https://bfl.ai/announcements/flux-1-kontext-dev) [[model]](https://huggingface.co/black-forest-labs/FLUX.1-Kontext-dev)
         """)
         with gr.Row():
             with gr.Column():
@@ -147,43 +102,48 @@ with gr.Blocks(css=css) as demo:
                     )
                     run_button = gr.Button("Run", scale=0)
                 with gr.Accordion("Advanced Settings", open=False):
+
                     seed = gr.Slider(
                         label="Seed",
                         minimum=0,
                         maximum=MAX_SEED,
                         step=1,
-                        value=0, # HF app.py uses 0 as default, not 42 like in infer func default
+                        value=0,
                     )
-                    randomize_seed = gr.Checkbox(label="Randomize seed", value=True) # HF app.py has this True by default
+
+                    randomize_seed = gr.Checkbox(label="Randomize seed", value=True)
+
                     guidance_scale = gr.Slider(
                         label="Guidance Scale",
-                        minimum=1.0,
-                        maximum=10.0,
+                        minimum=1,
+                        maximum=10,
                         step=0.1,
                         value=2.5,
                     )
+
                     steps = gr.Slider(
                         label="Steps",
                         minimum=1,
-                        maximum=30, # HF app.py uses 30 max
+                        maximum=30,
                         value=28,
                         step=1
                     )
+
             with gr.Column():
                 result = gr.Image(label="Result", show_label=False, interactive=False)
                 reuse_button = gr.Button("Reuse this image", visible=False)
 
-        gr.on(
-            triggers=[run_button.click, prompt.submit],
-            fn=infer,
-            inputs=[input_image, prompt, seed, randomize_seed, guidance_scale, steps],
-            outputs=[result, seed, reuse_button]
-        )
-        reuse_button.click(
-            fn=lambda image: image,
-            inputs=[result],
-            outputs=[input_image]
-        )
 
-if __name__ == "__main__":
-    demo.launch()
+    gr.on(
+        triggers=[run_button.click, prompt.submit],
+        fn = infer,
+        inputs = [input_image, prompt, seed, randomize_seed, guidance_scale, steps],
+        outputs = [result, seed, reuse_button]
+    )
+    reuse_button.click(
+        fn = lambda image: image,
+        inputs = [result],
+        outputs = [input_image]
+    )
+
+demo.launch(mcp_server=True)
